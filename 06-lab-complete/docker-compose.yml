@@ -1,10 +1,18 @@
-version: "3.9"
+# ============================================================
+# Production Stack: Nginx LB → 3 Agent instances → Redis
+#
+# Chạy:  docker compose up --build
+# Test:  curl http://localhost:8080/health
+# Scale: mặc định 3 replicas (đổi bằng --scale agent=N)
+# ============================================================
 
 services:
+
+  # ──────────────────────────────────────
+  # Agent — stateless, scale được
+  # ──────────────────────────────────────
   agent:
     build: .
-    ports:
-      - "8000:8000"
     environment:
       - ENVIRONMENT=staging
       - APP_NAME=Production AI Agent
@@ -22,7 +30,19 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+    networks:
+      - agent_net
+    # Không expose port — chỉ access qua nginx
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M   # 2 uvicorn workers cần > 256M, thấp hơn sẽ bị OOM kill
 
+  # ──────────────────────────────────────
+  # Redis — state store (sessions, rate limit, cost)
+  # ──────────────────────────────────────
   redis:
     image: redis:7-alpine
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
@@ -31,3 +51,23 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+    networks:
+      - agent_net
+
+  # ──────────────────────────────────────
+  # Nginx — Load Balancer
+  # ──────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent
+    networks:
+      - agent_net
+
+networks:
+  agent_net:
+    driver: bridge
